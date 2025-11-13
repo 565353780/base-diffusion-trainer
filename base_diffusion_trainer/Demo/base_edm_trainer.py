@@ -1,3 +1,6 @@
+import sys
+sys.path.append('../base-trainer')
+
 import torch
 from torch import nn
 from typing import Union
