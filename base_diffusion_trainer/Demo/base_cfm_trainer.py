@@ -104,9 +104,6 @@ class Trainer(BaseCFMTrainer):
 
     @torch.no_grad()
     def sampleModelStep(self, model: torch.nn.Module, model_name: str) -> bool:
-        if self.rank != 0:
-            return True
-
         sample_num = 3
         data_shape = [sample_num, your_gen_data_shape]
         timestamp_num = 2
