@@ -3,10 +3,74 @@ sys.path.append('../base-trainer')
 
 import torch
 from torch import nn
-from typing import Union
 from torch.utils.data import Dataset
+from typing import Callable, Optional, Union
 
 from base_diffusion_trainer.Module.base_cfm_trainer import BaseCFMTrainer
+
+
+class ToyCFMDataset(Dataset):
+    def __init__(
+        self,
+        data_num: int = 1024,
+        data_dim: int = 16,
+        condition_dim: int = 4,
+    ) -> None:
+        self.data_num = data_num
+        self.data_dim = data_dim
+        self.condition_dim = condition_dim
+        return
+
+    def __len__(self) -> int:
+        return self.data_num
+
+    def __getitem__(self, idx: int) -> dict:
+        generator = torch.Generator().manual_seed(idx)
+        condition = torch.randn(self.condition_dim, generator=generator)
+        x_1 = torch.randn(self.data_dim, generator=generator) + condition.mean()
+
+        return {
+            "x_1": x_1,
+            "condition": condition,
+        }
+
+
+class ToyCFMModel(nn.Module):
+    def __init__(
+        self,
+        data_dim: int = 16,
+        condition_dim: int = 4,
+        hidden_dim: int = 64,
+    ) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(data_dim + condition_dim + 1, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, data_dim),
+        )
+        return
+
+    def forward(self, data_dict: dict) -> dict:
+        return {
+            "v_t": self.forwardData(
+                data_dict["x_t"],
+                data_dict["condition"],
+                data_dict["t"],
+            )
+        }
+
+    def forwardData(
+        self,
+        x_t: torch.Tensor,
+        condition: torch.Tensor,
+        t: torch.Tensor,
+    ) -> torch.Tensor:
+        while t.ndim < x_t.ndim:
+            t = t.unsqueeze(-1)
+        model_input = torch.cat([x_t, condition.to(x_t.dtype), t.to(x_t.dtype)], dim=-1)
+        return self.net(model_input)
 
 
 class Trainer(BaseCFMTrainer):
@@ -15,10 +79,9 @@ class Trainer(BaseCFMTrainer):
         batch_size: int = 5,
         accum_iter: int = 10,
         num_workers: int = 16,
+        prefetch_factor: int = 2,
         model_file_path: Union[str, None] = None,
         weights_only: bool = False,
-        device: str = "cuda:0",
-        dtype=torch.float32,
         warm_step_num: int = 2000,
         finetune_step_num: int = -1,
         lr: float = 2e-4,
@@ -31,60 +94,87 @@ class Trainer(BaseCFMTrainer):
         best_model_metric_name: Union[str, None] = None,
         is_metric_lower_better: bool = True,
         sample_results_freq: int = -1,
-        use_amp: bool = False,
         quick_test: bool = False,
+        save_checkpoint_freq: int = -1,
+        compile_fn: Optional[Callable] = None,
+        load_model_fn: Optional[Callable] = None,
+        save_model_fn: Optional[Callable] = None,
+        data_dim: int = 16,
+        condition_dim: int = 4,
+        time_eps: float = 1e-5,
+        time_logit_mean: float = 0.0,
+        time_logit_std: float = 1.0,
+        time_shift_mu: float = 1.15,
     ) -> None:
-        # super params definition here
-        # self.name = value
-        # ...
+        self.data_dim = data_dim
+        self.condition_dim = condition_dim
 
         super().__init__(
-            batch_size,
-            accum_iter,
-            num_workers,
-            model_file_path,
-            weights_only,
-            device,
-            dtype,
-            warm_step_num,
-            finetune_step_num,
-            lr,
-            lr_batch_size,
-            ema_start_step,
-            ema_decay_init,
-            ema_decay,
-            save_result_folder_path,
-            save_log_folder_path,
-            best_model_metric_name,
-            is_metric_lower_better,
-            sample_results_freq,
-            use_amp,
-            quick_test,
+            batch_size=batch_size,
+            accum_iter=accum_iter,
+            num_workers=num_workers,
+            prefetch_factor=prefetch_factor,
+            model_file_path=model_file_path,
+            weights_only=weights_only,
+            warm_step_num=warm_step_num,
+            finetune_step_num=finetune_step_num,
+            lr=lr,
+            lr_batch_size=lr_batch_size,
+            ema_start_step=ema_start_step,
+            ema_decay_init=ema_decay_init,
+            ema_decay=ema_decay,
+            save_result_folder_path=save_result_folder_path,
+            save_log_folder_path=save_log_folder_path,
+            best_model_metric_name=best_model_metric_name,
+            is_metric_lower_better=is_metric_lower_better,
+            sample_results_freq=sample_results_freq,
+            quick_test=quick_test,
+            save_checkpoint_freq=save_checkpoint_freq,
+            compile_fn=compile_fn,
+            load_model_fn=load_model_fn,
+            save_model_fn=save_model_fn,
+            time_eps=time_eps,
+            time_logit_mean=time_logit_mean,
+            time_logit_std=time_logit_std,
+            time_shift_mu=time_shift_mu,
         )
         return
 
     def createDatasets(self) -> bool:
-        self.dataloader_dict["name"] = {
-            "dataset": Dataset(self.dtype),
+        self.dataloader_dict["train"] = {
+            "dataset": ToyCFMDataset(
+                data_num=1024,
+                data_dim=self.data_dim,
+                condition_dim=self.condition_dim,
+            ),
             "repeat_num": 1,
         }
 
         self.dataloader_dict["eval"] = {
-            "dataset": Dataset(self.dtype),
+            "dataset": ToyCFMDataset(
+                data_num=64,
+                data_dim=self.data_dim,
+                condition_dim=self.condition_dim,
+            ),
         }
-
-        # crop data num for faster evaluation
-        self.dataloader_dict["eval"]["dataset"].data_list = self.dataloader_dict[
-            "eval"
-        ]["dataset"].data_list[:64]
         return True
 
     def createModel(self) -> bool:
-        self.model = nn.Module().to(self.device, dtype=self.dtype)
+        self.model = ToyCFMModel(
+            data_dim=self.data_dim,
+            condition_dim=self.condition_dim,
+        ).to(self.device, dtype=self.dtype)
         return True
 
     def preProcessData(self, data_dict: dict, is_training: bool = False) -> dict:
-        data_dict = self.preProcessDiffusionData(data_dict, your_gen_data_name, is_training)
+        data_dict["x_1"] = data_dict["x_1"].to(self.dtype)
+        data_dict["condition"] = data_dict["condition"].to(self.dtype)
+
+        data_dict = self.preProcessDiffusionData(
+            data_dict,
+            data_name="x_1",
+            is_training=is_training,
+        )
 
         if is_training:
             data_dict["drop_prob"] = 0.0
@@ -105,18 +195,17 @@ class Trainer(BaseCFMTrainer):
     @torch.no_grad()
     def sampleModelStep(self, model: torch.nn.Module, model_name: str) -> bool:
         sample_num = 3
-        data_shape = [sample_num, your_gen_data_shape]
+        data_shape = [sample_num, self.data_dim]
         timestamp_num = 2
 
-        dataset = self.dataloader_dict["mash"]["dataset"]
+        dataset = self.dataloader_dict["eval"]["dataset"]
 
         model.eval()
 
         data = dataset.__getitem__(0)
 
-        # process data here
-        condition = data["condition"]
-        mesh = data["mesh"]
+        condition = data["condition"].to(self.device, dtype=self.dtype)
+        condition = condition.unsqueeze(0).repeat(sample_num, 1)
 
         sampled_array = self.sampleData(
             model,
@@ -126,8 +215,11 @@ class Trainer(BaseCFMTrainer):
             timestamp_num,
         )
 
-        self.logger.addPointCloud(model_name + "/gen_0", sampled_array, self.step)
-        self.logger.addMesh(model_name + "/mesh_0", mesh, self.step)
+        self.logger.addScalar(
+            model_name + "/sample_abs_mean",
+            sampled_array.abs().mean().item(),
+            self.step,
+        )
 
         return True
 
@@ -136,13 +228,9 @@ def demo():
     batch_size = 8
     accum_iter = 20
     num_workers = 16
+    prefetch_factor = 4
     model_file_path = None
-    model_file_path = "../../output/20241225_15:14:36/model_last.pth".replace(
-        "../../", "./"
-    )
     weights_only = False
-    device = "auto"
-    dtype = torch.float32
     warm_step_num = 2000
     finetune_step_num = -1
     lr = 2e-4
@@ -155,31 +243,42 @@ def demo():
     best_model_metric_name = None
     is_metric_lower_better = True
     sample_results_freq = 1
-    use_amp = False
     quick_test = False
+    save_checkpoint_freq = 1000
+    compile_fn = None
+    save_model_fn = None
+    time_eps = 1e-5
+    time_logit_mean = 0.0
+    time_logit_std = 1.0
+    time_shift_mu = 1.15
 
     trainer = Trainer(
-        batch_size,
-        accum_iter,
-        num_workers,
-        model_file_path,
-        weights_only,
-        device,
-        dtype,
-        warm_step_num,
-        finetune_step_num,
-        lr,
-        lr_batch_size,
-        ema_start_step,
-        ema_decay_init,
-        ema_decay,
-        save_result_folder_path,
-        save_log_folder_path,
-        best_model_metric_name,
-        is_metric_lower_better,
-        sample_results_freq,
-        use_amp,
-        quick_test,
+        batch_size=batch_size,
+        accum_iter=accum_iter,
+        num_workers=num_workers,
+        prefetch_factor=prefetch_factor,
+        model_file_path=model_file_path,
+        weights_only=weights_only,
+        warm_step_num=warm_step_num,
+        finetune_step_num=finetune_step_num,
+        lr=lr,
+        lr_batch_size=lr_batch_size,
+        ema_start_step=ema_start_step,
+        ema_decay_init=ema_decay_init,
+        ema_decay=ema_decay,
+        save_result_folder_path=save_result_folder_path,
+        save_log_folder_path=save_log_folder_path,
+        best_model_metric_name=best_model_metric_name,
+        is_metric_lower_better=is_metric_lower_better,
+        sample_results_freq=sample_results_freq,
+        quick_test=quick_test,
+        save_checkpoint_freq=save_checkpoint_freq,
+        compile_fn=compile_fn,
+        save_model_fn=save_model_fn,
+        time_eps=time_eps,
+        time_logit_mean=time_logit_mean,
+        time_logit_std=time_logit_std,
+        time_shift_mu=time_shift_mu,
     )
 
     trainer.train()
