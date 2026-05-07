@@ -1,5 +1,6 @@
 import torch
 import torchdiffeq
+
 from torch import nn
 from typing import Callable, Optional, Union
 from torch.distributed.fsdp import MixedPrecisionPolicy
@@ -47,6 +48,8 @@ class BaseCFMTrainer(BaseTrainer):
         self.time_logit_mean = time_logit_mean
         self.time_logit_std = time_logit_std
         self.time_shift_mu = time_shift_mu
+
+        self.diffusion_loss_fn = nn.MSELoss()
 
         super().__init__(
             batch_size=batch_size,
@@ -141,11 +144,10 @@ class BaseCFMTrainer(BaseTrainer):
     ) -> torch.Tensor:
         target_velocity = data_dict["v"]
         prediction_velocity = result_dict["v"]
-
-        loss_diffusion = torch.pow(
-            prediction_velocity.float() - target_velocity.float(),
-            2,
-        ).mean()
+        loss_diffusion = self.diffusion_loss_fn(
+            prediction_velocity.float(),
+            target_velocity.float(),
+        )
         return loss_diffusion
 
     @torch.no_grad()
