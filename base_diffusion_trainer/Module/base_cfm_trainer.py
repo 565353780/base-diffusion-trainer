@@ -124,7 +124,6 @@ class BaseCFMTrainer(BaseTrainer):
         time_name: str = "t",
         output_data_name: str = "x_t",
         target_velocity_name: str = "v_t",
-        write_legacy_names: bool = True,
     ) -> dict:
         clean_data = data_dict[data_name]
         noise_data = torch.randn_like(clean_data)
@@ -135,17 +134,13 @@ class BaseCFMTrainer(BaseTrainer):
             clean_data.device,
             clean_data.dtype,
         )
-        xt, ut = self.sampleFlowPath(path_start, path_end, t)
+        x_t, v_t = self.sampleFlowPath(path_start, path_end, t)
 
         data_dict[noise_data_name] = noise_data
         data_dict[clean_data_name] = clean_data
         data_dict[time_name] = t
-        data_dict[output_data_name] = xt
-        data_dict[target_velocity_name] = ut
-
-        if write_legacy_names:
-            data_dict["xt"] = xt
-            data_dict["ut"] = ut
+        data_dict[output_data_name] = x_t
+        data_dict[target_velocity_name] = v_t
 
         return data_dict
 
@@ -156,11 +151,6 @@ class BaseCFMTrainer(BaseTrainer):
         target_velocity_name: str = "v_t",
         prediction_velocity_name: str = "v_t",
     ) -> torch.Tensor:
-        if target_velocity_name not in data_dict and target_velocity_name == "v_t":
-            target_velocity_name = "ut"
-        if prediction_velocity_name not in result_dict and prediction_velocity_name == "v_t":
-            prediction_velocity_name = "vt"
-
         target_velocity = data_dict[target_velocity_name]
         prediction_velocity = result_dict[prediction_velocity_name]
 
@@ -178,15 +168,18 @@ class BaseCFMTrainer(BaseTrainer):
     def sampleData(
         self,
         model: nn.Module,
-        condition: torch.Tensor,
+        model_input_dict: dict,
         data_shape: list,
         sample_num: int = 1,
         timestamp_num: int = 2,
+        time_name: str = "t",
+        sample_data_name: str = "x_t",
+        prediction_velocity_name: str = "v_t",
     ) -> torch.Tensor:
         if self.path_direction == "data_to_noise":
-            query_t = torch.linspace(1, 0, timestamp_num).to(self.device)
+            query_t = torch.linspace(1, 0, timestamp_num).to(self.device, dtype=self.dtype)
         elif self.path_direction == "noise_to_data":
-            query_t = torch.linspace(0, 1, timestamp_num).to(self.device)
+            query_t = torch.linspace(0, 1, timestamp_num).to(self.device, dtype=self.dtype)
         else:
             raise ValueError(f"Unknown path_direction: {self.path_direction}")
 
@@ -194,8 +187,19 @@ class BaseCFMTrainer(BaseTrainer):
         rnd = StackedRandomGenerator(self.device, batch_seeds)
         x_init = rnd.randn(data_shape, device=self.device, dtype=self.dtype)
 
+        def ode_fn(t: torch.Tensor, x_t: torch.Tensor) -> torch.Tensor:
+            t = t.to(device=x_t.device, dtype=x_t.dtype)
+            if t.ndim == 0 or (t.ndim == 1 and t.shape[0] == 1):
+                t = t.reshape(1).expand(x_t.shape[0])
+
+            input_dict = dict(model_input_dict)
+            input_dict[time_name] = t
+            input_dict[sample_data_name] = x_t
+            result_dict = model(input_dict)
+            return result_dict[prediction_velocity_name]
+
         traj = torchdiffeq.odeint(
-            lambda t, x: model.forwardData(x, condition, t),
+            ode_fn,
             x_init,
             query_t,
             atol=1e-4,

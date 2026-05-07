@@ -53,24 +53,13 @@ class ToyCFMModel(nn.Module):
         return
 
     def forward(self, data_dict: dict) -> dict:
-        return {
-            "v_t": self.forwardData(
-                data_dict["x_t"],
-                data_dict["condition"],
-                data_dict["t"],
-            )
-        }
-
-    def forwardData(
-        self,
-        x_t: torch.Tensor,
-        condition: torch.Tensor,
-        t: torch.Tensor,
-    ) -> torch.Tensor:
+        x_t = data_dict["x_t"]
+        condition = data_dict["condition"]
+        t = data_dict["t"]
         while t.ndim < x_t.ndim:
             t = t.unsqueeze(-1)
         model_input = torch.cat([x_t, condition.to(x_t.dtype), t.to(x_t.dtype)], dim=-1)
-        return self.net(model_input)
+        return {"v_t": self.net(model_input)}
 
 
 class Trainer(BaseCFMTrainer):
@@ -209,7 +198,7 @@ class Trainer(BaseCFMTrainer):
 
         sampled_array = self.sampleData(
             model,
-            condition,
+            {"condition": condition},
             data_shape,
             sample_num,
             timestamp_num,

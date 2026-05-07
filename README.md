@@ -14,4 +14,7 @@ conda activate bdt
 python demo.py
 ```
 
+`BaseCFMTrainer` only assumes the model accepts one `dict` and returns one `dict`.
+Align custom input/output keys in your `BaseCFMTrainer` subclass.
+
 ## Enjoy it~
