@@ -27,10 +27,10 @@ class ToyCFMDataset(Dataset):
     def __getitem__(self, idx: int) -> dict:
         generator = torch.Generator().manual_seed(idx)
         condition = torch.randn(self.condition_dim, generator=generator)
-        x_1 = torch.randn(self.data_dim, generator=generator) + condition.mean()
+        x_target = torch.randn(self.data_dim, generator=generator) + condition.mean()
 
         return {
-            "x_1": x_1,
+            "x_target": x_target,
             "condition": condition,
         }
 
@@ -53,13 +53,20 @@ class ToyCFMModel(nn.Module):
         return
 
     def forward(self, data_dict: dict) -> dict:
-        x_t = data_dict["x_t"]
+        x_noisy_target = data_dict["x_noisy_target"]
         condition = data_dict["condition"]
         t = data_dict["t"]
-        while t.ndim < x_t.ndim:
+        while t.ndim < x_noisy_target.ndim:
             t = t.unsqueeze(-1)
-        model_input = torch.cat([x_t, condition.to(x_t.dtype), t.to(x_t.dtype)], dim=-1)
-        return {"v_t": self.net(model_input)}
+        model_input = torch.cat(
+            [
+                x_noisy_target,
+                condition.to(x_noisy_target.dtype),
+                t.to(x_noisy_target.dtype),
+            ],
+            dim=-1,
+        )
+        return {"v": self.net(model_input)}
 
 
 class Trainer(BaseCFMTrainer):
@@ -155,15 +162,12 @@ class Trainer(BaseCFMTrainer):
         ).to(self.device, dtype=self.dtype)
         return True
 
-    def preProcessData(self, data_dict: dict, is_training: bool = False) -> dict:
-        data_dict["x_1"] = data_dict["x_1"].to(self.dtype)
+    def preProcessData(self, data_dict: dict, is_training: bool = True) -> dict:
+        data_dict["x_target"] = data_dict["x_target"].to(self.dtype)
         data_dict["condition"] = data_dict["condition"].to(self.dtype)
-
-        data_dict = self.preProcessDiffusionData(
-            data_dict,
-            data_name="x_1",
-            is_training=is_training,
-        )
+        for key in ("x_noise", "x_noisy_target", "t", "v"):
+            if key in data_dict:
+                data_dict[key] = data_dict[key].to(self.dtype)
 
         if is_training:
             data_dict["drop_prob"] = 0.0
@@ -171,15 +175,6 @@ class Trainer(BaseCFMTrainer):
             data_dict["drop_prob"] = 0.0
 
         return data_dict
-
-    def getLossDict(self, data_dict: dict, result_dict: dict) -> dict:
-        loss_diffusion = self.getDiffusionLoss(data_dict, result_dict)
-
-        loss_dict = {
-            "Loss": loss_diffusion,
-        }
-
-        return loss_dict
 
     @torch.no_grad()
     def sampleModelStep(self, model: torch.nn.Module, model_name: str) -> bool:

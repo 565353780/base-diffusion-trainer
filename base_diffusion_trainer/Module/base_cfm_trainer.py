@@ -42,15 +42,11 @@ class BaseCFMTrainer(BaseTrainer):
         time_logit_mean: float = 0.0,
         time_logit_std: float = 1.0,
         time_shift_mu: float = 1.15,
-        path_direction: str = "data_to_noise",
-        diffusion_loss_clamp: Optional[float] = None,
     ) -> None:
         self.time_eps = time_eps
         self.time_logit_mean = time_logit_mean
         self.time_logit_std = time_logit_std
         self.time_shift_mu = time_shift_mu
-        self.path_direction = path_direction
-        self.diffusion_loss_clamp = diffusion_loss_clamp
 
         super().__init__(
             batch_size=batch_size,
@@ -98,70 +94,57 @@ class BaseCFMTrainer(BaseTrainer):
 
     def sampleFlowPath(
         self,
-        path_start: torch.Tensor,
-        path_end: torch.Tensor,
+        x_noise: torch.Tensor,
+        x_target: torch.Tensor,
         t: torch.Tensor,
     ):
-        t = self.expandTimeLike(t, path_start)
-        x_t = (1.0 - t) * path_start + t * path_end
-        v_t = path_end - path_start
-        return x_t, v_t
-
-    def _getPathEndpoints(self, clean_data: torch.Tensor, noise_data: torch.Tensor):
-        if self.path_direction == "data_to_noise":
-            return clean_data, noise_data
-        if self.path_direction == "noise_to_data":
-            return noise_data, clean_data
-        raise ValueError(f"Unknown path_direction: {self.path_direction}")
+        t = self.expandTimeLike(t, x_noise)
+        x_noisy_target = (1.0 - t) * x_noise + t * x_target
+        v = x_target - x_noise
+        return x_noisy_target, v
 
     def preProcessDiffusionData(
         self,
         data_dict: dict,
-        data_name: str,
-        is_training: bool = False,
-        noise_data_name: str = "x_0",
-        clean_data_name: str = "x_1",
-        time_name: str = "t",
-        output_data_name: str = "x_t",
-        target_velocity_name: str = "v_t",
     ) -> dict:
-        clean_data = data_dict[data_name]
-        noise_data = torch.randn_like(clean_data)
-        path_start, path_end = self._getPathEndpoints(clean_data, noise_data)
+        x_target = data_dict["x_target"]
+        x_noise = torch.randn_like(x_target)
 
         t = self.sampleTime(
-            clean_data.shape[0],
-            clean_data.device,
-            clean_data.dtype,
+            x_target.shape[0],
+            x_target.device,
+            x_target.dtype,
         )
-        x_t, v_t = self.sampleFlowPath(path_start, path_end, t)
+        x_noisy_target, v = self.sampleFlowPath(x_noise, x_target, t)
 
-        data_dict[noise_data_name] = noise_data
-        data_dict[clean_data_name] = clean_data
-        data_dict[time_name] = t
-        data_dict[output_data_name] = x_t
-        data_dict[target_velocity_name] = v_t
+        data_dict["x_noise"] = x_noise
+        data_dict["x_target"] = x_target
+        data_dict["t"] = t
+        data_dict["x_noisy_target"] = x_noisy_target
+        data_dict["v"] = v
 
         return data_dict
+
+    def getLossDict(self, data_dict: dict, result_dict: dict) -> dict:
+        loss_diffusion = result_dict['loss_diffusion']
+        loss_dict = {
+            'Loss': loss_diffusion,
+            'loss_diffusion': loss_diffusion,
+        }
+        return loss_dict
 
     def getDiffusionLoss(
         self,
         data_dict: dict,
         result_dict: dict,
-        target_velocity_name: str = "v_t",
-        prediction_velocity_name: str = "v_t",
     ) -> torch.Tensor:
-        target_velocity = data_dict[target_velocity_name]
-        prediction_velocity = result_dict[prediction_velocity_name]
+        target_velocity = data_dict["v"]
+        prediction_velocity = result_dict["v"]
 
         loss_diffusion = torch.pow(
             prediction_velocity.float() - target_velocity.float(),
             2,
         ).mean()
-
-        if self.diffusion_loss_clamp is not None:
-            loss_diffusion = loss_diffusion.clamp(max=self.diffusion_loss_clamp)
-
         return loss_diffusion
 
     @torch.no_grad()
@@ -172,31 +155,23 @@ class BaseCFMTrainer(BaseTrainer):
         data_shape: list,
         sample_num: int = 1,
         timestamp_num: int = 2,
-        time_name: str = "t",
-        sample_data_name: str = "x_t",
-        prediction_velocity_name: str = "v_t",
     ) -> torch.Tensor:
-        if self.path_direction == "data_to_noise":
-            query_t = torch.linspace(1, 0, timestamp_num).to(self.device, dtype=self.dtype)
-        elif self.path_direction == "noise_to_data":
-            query_t = torch.linspace(0, 1, timestamp_num).to(self.device, dtype=self.dtype)
-        else:
-            raise ValueError(f"Unknown path_direction: {self.path_direction}")
+        query_t = torch.linspace(0, 1, timestamp_num).to(self.device, dtype=self.dtype)
 
         batch_seeds = torch.arange(sample_num)
         rnd = StackedRandomGenerator(self.device, batch_seeds)
         x_init = rnd.randn(data_shape, device=self.device, dtype=self.dtype)
 
-        def ode_fn(t: torch.Tensor, x_t: torch.Tensor) -> torch.Tensor:
-            t = t.to(device=x_t.device, dtype=x_t.dtype)
+        def ode_fn(t: torch.Tensor, x_noisy_target: torch.Tensor) -> torch.Tensor:
+            t = t.to(device=x_noisy_target.device, dtype=x_noisy_target.dtype)
             if t.ndim == 0 or (t.ndim == 1 and t.shape[0] == 1):
-                t = t.reshape(1).expand(x_t.shape[0])
+                t = t.reshape(1).expand(x_noisy_target.shape[0])
 
             input_dict = dict(model_input_dict)
-            input_dict[time_name] = t
-            input_dict[sample_data_name] = x_t
+            input_dict["t"] = t
+            input_dict["x_noisy_target"] = x_noisy_target
             result_dict = model(input_dict)
-            return result_dict[prediction_velocity_name]
+            return result_dict["v"]
 
         traj = torchdiffeq.odeint(
             ode_fn,

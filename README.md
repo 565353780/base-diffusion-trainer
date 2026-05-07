@@ -14,7 +14,9 @@ conda activate bdt
 python demo.py
 ```
 
-`BaseCFMTrainer` only assumes the model accepts one `dict` and returns one `dict`.
-Align custom input/output keys in your `BaseCFMTrainer` subclass.
+`BaseTrainer` calls `preProcessDiffusionData` before `preProcessData`, so `BaseCFMTrainer` subclasses can override **`preProcessData`** directly for dataset-specific dtype / conditioning while still receiving flow-matching fields.
+
+The model must accept a `dict` and return a `dict` with **`"v"`**; default loss is MSE on `v` vs ground-truth `data_dict["v"]`.
+`BaseTrainer` also calls `getDiffusionLoss` before `getLossDict` and stores it as `result_dict["loss_diffusion"]`, so subclasses can override **`getLossDict`** directly while reusing the precomputed diffusion loss.
 
 ## Enjoy it~
