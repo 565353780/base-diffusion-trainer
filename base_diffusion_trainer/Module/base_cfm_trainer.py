@@ -85,7 +85,8 @@ class BaseCFMTrainer(BaseTrainer):
 
         shifted_t = torch.exp(torch.tensor(self.time_shift_mu, device=device, dtype=dtype))
         t = shifted_t / (shifted_t + (1.0 / t - 1.0))
-        return t.clamp(self.time_eps, 1.0 - self.time_eps)
+        inv_t = 1.0 - t
+        return inv_t.clamp(self.time_eps, 1.0 - self.time_eps)
 
     def expandTimeLike(self, t: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
         while t.ndim < x.ndim:
@@ -171,6 +172,7 @@ class BaseCFMTrainer(BaseTrainer):
             input_dict["t"] = t
             input_dict["x_noisy_target"] = x_noisy_target
             result_dict = model(input_dict)
+            result_dict = self.postProcessData(input_dict, result_dict, False)
             return result_dict["v"]
 
         traj = torchdiffeq.odeint(
