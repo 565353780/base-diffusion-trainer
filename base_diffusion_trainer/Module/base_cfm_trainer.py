@@ -39,6 +39,7 @@ class BaseCFMTrainer(BaseTrainer):
         mp_policy: Optional[MixedPrecisionPolicy] = None,
         load_model_fn: Optional[Callable] = None,
         save_model_fn: Optional[Callable] = None,
+        is_balanced_sample: bool = False,
         time_eps: float = 1e-5,
         time_logit_mean: float = 0.0,
         time_logit_std: float = 1.0,
@@ -77,6 +78,7 @@ class BaseCFMTrainer(BaseTrainer):
             mp_policy=mp_policy,
             load_model_fn=load_model_fn,
             save_model_fn=save_model_fn,
+            is_balanced_sample=is_balanced_sample,
         )
         return
 

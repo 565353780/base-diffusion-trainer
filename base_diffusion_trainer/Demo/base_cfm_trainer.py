@@ -95,15 +95,14 @@ class Trainer(BaseCFMTrainer):
         compile_fn: Optional[Callable] = None,
         load_model_fn: Optional[Callable] = None,
         save_model_fn: Optional[Callable] = None,
+        is_balanced_sample: bool = False,
         data_dim: int = 16,
-        condition_dim: int = 4,
         time_eps: float = 1e-5,
         time_logit_mean: float = 0.0,
         time_logit_std: float = 1.0,
         time_shift_mu: float = 1.15,
     ) -> None:
         self.data_dim = data_dim
-        self.condition_dim = condition_dim
 
         super().__init__(
             batch_size=batch_size,
@@ -129,6 +128,7 @@ class Trainer(BaseCFMTrainer):
             compile_fn=compile_fn,
             load_model_fn=load_model_fn,
             save_model_fn=save_model_fn,
+            is_balanced_sample=is_balanced_sample,
             time_eps=time_eps,
             time_logit_mean=time_logit_mean,
             time_logit_std=time_logit_std,
@@ -141,7 +141,6 @@ class Trainer(BaseCFMTrainer):
             "dataset": ToyCFMDataset(
                 data_num=1024,
                 data_dim=self.data_dim,
-                condition_dim=self.condition_dim,
             ),
             "repeat_num": 1,
         }
@@ -150,7 +149,6 @@ class Trainer(BaseCFMTrainer):
             "dataset": ToyCFMDataset(
                 data_num=64,
                 data_dim=self.data_dim,
-                condition_dim=self.condition_dim,
             ),
         }
         return True
@@ -158,7 +156,6 @@ class Trainer(BaseCFMTrainer):
     def createModel(self) -> bool:
         self.model = ToyCFMModel(
             data_dim=self.data_dim,
-            condition_dim=self.condition_dim,
         ).to(self.device, dtype=self.dtype)
         return True
 
@@ -231,6 +228,7 @@ def demo():
     save_checkpoint_freq = 1000
     compile_fn = None
     save_model_fn = None
+    is_balanced_sample = False
     time_eps = 1e-5
     time_logit_mean = 0.0
     time_logit_std = 1.0
@@ -259,6 +257,7 @@ def demo():
         save_checkpoint_freq=save_checkpoint_freq,
         compile_fn=compile_fn,
         save_model_fn=save_model_fn,
+        is_balanced_sample=is_balanced_sample,
         time_eps=time_eps,
         time_logit_mean=time_logit_mean,
         time_logit_std=time_logit_std,
