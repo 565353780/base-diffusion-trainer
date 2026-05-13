@@ -1,5 +1,4 @@
 import torch
-import torchdiffeq
 
 from torch import nn
 from typing import Callable, Optional, Union
@@ -8,10 +7,10 @@ from torch.distributed.fsdp import MixedPrecisionPolicy
 from base_trainer.Module.base_trainer import BaseTrainer
 from base_trainer.Method.fsdp import default_fsdp_shard_fn
 
-from base_diffusion_trainer.Module.stacked_random_generator import StackedRandomGenerator
+from base_diffusion_trainer.Module.base_cfm_sampler import BaseCFMSampler
 
 
-class BaseCFMTrainer(BaseTrainer):
+class BaseCFMTrainer(BaseTrainer, BaseCFMSampler):
     def __init__(
         self,
         batch_size: int = 5,
@@ -44,15 +43,25 @@ class BaseCFMTrainer(BaseTrainer):
         time_logit_mean: float = 0.0,
         time_logit_std: float = 1.0,
         time_shift_mu: float = 1.15,
+        ode_atol: float = 1e-4,
+        ode_rtol: float = 1e-4,
+        ode_method: str = "dopri5",
     ) -> None:
-        self.time_eps = time_eps
-        self.time_logit_mean = time_logit_mean
-        self.time_logit_std = time_logit_std
-        self.time_shift_mu = time_shift_mu
+        BaseCFMSampler.__init__(
+            self,
+            time_eps=time_eps,
+            time_logit_mean=time_logit_mean,
+            time_logit_std=time_logit_std,
+            time_shift_mu=time_shift_mu,
+            ode_atol=ode_atol,
+            ode_rtol=ode_rtol,
+            ode_method=ode_method,
+        )
 
         self.diffusion_loss_fn = nn.MSELoss()
 
-        super().__init__(
+        BaseTrainer.__init__(
+            self,
             batch_size=batch_size,
             accum_iter=accum_iter,
             num_workers=num_workers,
@@ -81,33 +90,6 @@ class BaseCFMTrainer(BaseTrainer):
             is_balanced_sample=is_balanced_sample,
         )
         return
-
-    def sampleTime(self, batch_size: int, device, dtype) -> torch.Tensor:
-        logit_t = torch.randn(batch_size, device=device, dtype=dtype)
-        logit_t = logit_t * self.time_logit_std + self.time_logit_mean
-        t = torch.sigmoid(logit_t)
-        t = t.clamp(self.time_eps, 1.0 - self.time_eps)
-
-        shifted_t = torch.exp(torch.tensor(self.time_shift_mu, device=device, dtype=dtype))
-        t = shifted_t / (shifted_t + (1.0 / t - 1.0))
-        inv_t = 1.0 - t
-        return inv_t.clamp(self.time_eps, 1.0 - self.time_eps)
-
-    def expandTimeLike(self, t: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
-        while t.ndim < x.ndim:
-            t = t.unsqueeze(-1)
-        return t
-
-    def sampleFlowPath(
-        self,
-        x_noise: torch.Tensor,
-        x_target: torch.Tensor,
-        t: torch.Tensor,
-    ):
-        t = self.expandTimeLike(t, x_noise)
-        x_noisy_target = (1.0 - t) * x_noise + t * x_target
-        v = x_target - x_noise
-        return x_noisy_target, v
 
     def preProcessDiffusionData(
         self,
@@ -151,43 +133,3 @@ class BaseCFMTrainer(BaseTrainer):
             target_velocity.float(),
         )
         return loss_diffusion
-
-    @torch.no_grad()
-    def sampleData(
-        self,
-        model: nn.Module,
-        model_input_dict: dict,
-        data_shape: list,
-        sample_num: int = 1,
-        timestamp_num: int = 2,
-    ) -> torch.Tensor:
-        query_t = torch.linspace(0, 1, timestamp_num).to(self.device, dtype=self.dtype)
-
-        batch_seeds = torch.arange(sample_num)
-        rnd = StackedRandomGenerator(self.device, batch_seeds)
-        x_init = rnd.randn(data_shape, device=self.device, dtype=self.dtype)
-
-        def ode_fn(t: torch.Tensor, x_noisy_target: torch.Tensor) -> torch.Tensor:
-            t = t.to(device=x_noisy_target.device, dtype=x_noisy_target.dtype)
-            if t.ndim == 0 or (t.ndim == 1 and t.shape[0] == 1):
-                t = t.reshape(1).expand(x_noisy_target.shape[0])
-
-            input_dict = dict(model_input_dict)
-            input_dict["t"] = t
-            input_dict["x_noisy_target"] = x_noisy_target
-            result_dict = model(input_dict)
-            result_dict = self.postProcessData(input_dict, result_dict, False)
-            return result_dict["v"]
-
-        traj = torchdiffeq.odeint(
-            ode_fn,
-            x_init,
-            query_t,
-            atol=1e-4,
-            rtol=1e-4,
-            method="dopri5",
-        )
-
-        sampled_array = traj.cpu()[-1]
-
-        return sampled_array
