@@ -141,7 +141,7 @@ class BaseCFMSampler(object):
         into the model input dict, run the model, post-process via
         :meth:`postProcessData`, and read ``result_dict['v']``.
 
-        Legacy subclasses (e.g. the Flux ``Detector``) should override this
+        Legacy subclasses (e.g. the Flux ``Sampler``) should override this
         and perform any ``t``/``v`` direction conversions in one place.
         """
         input_dict = dict(model_input_dict)
@@ -309,6 +309,16 @@ class BaseCFMSampler(object):
             raise ValueError(
                 "time_schedule must be a 1-D tensor with at least 2 entries; "
                 f"got shape {tuple(time_schedule.shape)}"
+            )
+
+        # Enforce the CFM convention (``t_cfm`` strictly increasing from
+        # noise to data) so a non-monotone schedule fails fast instead of
+        # silently producing bad samples via negative ``dt`` updates.
+        diffs = time_schedule[1:] - time_schedule[:-1]
+        if not bool(torch.all(diffs > 0).item()):
+            raise ValueError(
+                "time_schedule must be strictly increasing in [0, 1]; "
+                f"got {time_schedule.detach().cpu().tolist()}"
             )
 
         x = x_init
